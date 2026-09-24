@@ -42,10 +42,46 @@ app.get('/api/inventory', async (req, res) => {
 
 // B. Africa's Talking USSD Webhook
 app.post('/ussd', async (req, res) => {
-  console.log("INCOMING USSD HIT FROM AT!", req.body);
-  
-  const { sessionId, serviceCode, phoneNumber, text } = req.body;
+  const { sessionId, phoneNumber, text } = req.body;
   let response = '';
+
+  // Africa's Talking sends nested inputs separated by asterisks (e.g., "1*Samuel*Ado-Ekiti")
+  const textArray = text.split('*');
+
+  try {
+    if (text === '') {
+      response = 'CON Welcome to AgroConnect Ekiti \n1. Register Farmer \n2. Check Weather';
+    } else if (textArray[0] === '1' && textArray.length === 1) {
+      response = 'CON Enter your full name:';
+    } else if (textArray[0] === '1' && textArray.length === 2) {
+      response = 'CON Enter your town (e.g., Ado-Ekiti):';
+    } else if (textArray[0] === '1' && textArray.length === 3) {
+      const fullName = textArray[1];
+      const town = textArray[2];
+      
+      const insertQuery = `
+        INSERT INTO tbl_users (name, phone, town, role) 
+        VALUES ($1, $2, $3, 'Farmer') RETURNING id
+      `;
+      // Execute the database insertion
+      await pool.query(insertQuery, [fullName, phoneNumber, town]);
+      
+      response = `END Registration successful, ${fullName}. Your profile is active.`;
+    } else if (text === '2') {
+      response = 'END The weather in Ekiti is currently sunny.';
+    } else {
+      response = 'END Invalid input. Please try again.';
+    }
+
+    res.set('Content-Type', 'text/plain');
+    res.send(response);
+
+  } catch (error) {
+    console.error("USSD Transaction Error:", error);
+    res.set('Content-Type', 'text/plain');
+    res.send('END A network error occurred. Please try again.');
+  }
+});
 
   // Basic USSD Routing Logic
   if (text === '') {
