@@ -34,8 +34,9 @@ app.get('/api/inventory', async (req, res) => {
 });
 
 // Africa's Talking USSD Webhook
-app.post('/ussd', async (req, res) => {
-  console.log("INCOMING USSD DIAL FROM AFRICA'S TALKING NETWORK");
+app.post('/ussd', (req, res) => {
+    console.log("INCOMING USSD HIT FROM AT!", req.body);
+    // ... rest of your code
   
   try {
     const { sessionId, phoneNumber, text } = req.body;
