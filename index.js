@@ -66,7 +66,21 @@ app.post('/ussd', async (req, res) => {
 // C. Twilio / Meta WhatsApp Webhook
 app.post('/whatsapp', (req, res) => {
   console.log("INCOMING WHATSAPP MESSAGE!", req.body);
-  res.sendStatus(200);
+  const incomingMsg = (req.body.Body || '').trim().toLowerCase();
+  
+  let replyText = "Welcome to AgroConnect Ekiti! 🌾\n\nReply with:\n1. Check Crop Prices\n2. Register as Farmer/Buyer\n3. Weather Advisory";
+
+  if (incomingMsg === '1') {
+    replyText = "📊 *Current Market Prices (Ekiti)*:\n- Yam: ₦2,500 / tuber\n- Cassava: ₦18,500 / bag\n- Cocoa: ₦8,200 / kg";
+  } else if (incomingMsg === '2') {
+    replyText = "📝 To register, reply with your *Full Name* and *Town* (e.g., Samuel, Ado-Ekiti).";
+  } else if (incomingMsg === '3') {
+    replyText = "🌦️ *Agro-Weather Advisory*:\nScattered showers expected across Ado and Ikole Ekiti. Optimal soil moisture for planting.";
+  }
+
+  // Twilio requires an XML TwiML response
+  res.set('Content-Type', 'text/xml');
+  res.send(`<?xml version="1.0" encoding="UTF-8"?><Response><Message>${replyText}</Message></Response>`);
 });
 
 // Start the Server
