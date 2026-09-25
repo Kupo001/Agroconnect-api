@@ -1,190 +1,136 @@
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
-const redis = require('redis');
 
 const app = express();
 const port = process.env.PORT || 10000;
 
-// 1. CRITICAL MIDDLEWARE: Handles URL-encoded telecom payloads and JSON API requests
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 app.use(cors());
 
-// 2. DATABASE: Neon.tech PostgreSQL with SSL
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-  max: 20,
-  idleTimeoutMillis: 30000
+  ssl: { rejectUnauthorized: false }
 });
 
-// BULLETPROOFING: Automatically create database tables when the server starts
 const initializeDB = async () => {
   try {
-    // Create Users Table
-    const usersTable = `
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS tbl_users (
-        id SERIAL PRIMARY KEY,
-        name VARCHAR(100) NOT NULL,
-        phone VARCHAR(50),
-        town VARCHAR(100),
-        role VARCHAR(50) DEFAULT 'User',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        id SERIAL PRIMARY KEY, name VARCHAR(100), phone VARCHAR(50) UNIQUE, town VARCHAR(100), role VARCHAR(50), pin VARCHAR(4), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
-    `;
-    await pool.query(usersTable);
-
-    // Create Products/Marketplace Table
-    const productsTable = `
       CREATE TABLE IF NOT EXISTS tbl_products (
-        id SERIAL PRIMARY KEY,
-        seller_name VARCHAR(100),
-        seller_phone VARCHAR(50),
-        crop_name VARCHAR(100),
-        price_per_unit VARCHAR(50),
-        status VARCHAR(20) DEFAULT 'Available',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        id SERIAL PRIMARY KEY, seller_phone VARCHAR(50), crop_name VARCHAR(100), price_per_unit VARCHAR(50), status VARCHAR(20) DEFAULT 'Available', buyer_phone VARCHAR(50), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
-    `;
-    await pool.query(productsTable);
-
-    console.log("Database tables 'tbl_users' and 'tbl_products' are ready and verified.");
+    `);
+    console.log("Transactional Database Verified.");
   } catch (err) {
-    console.error("Database Initialization Error:", err);
+    console.error("DB Init Error:", err);
   }
 };
-initializeDB(); // Run the check on startup
+initializeDB();
 
-// 3. CACHE: Upstash Redis connection
-const redisClient = redis.createClient({ url: process.env.REDIS_URL });
-redisClient.on('error', (err) => console.error('Redis Client Error', err));
-redisClient.connect().catch(console.error);
+// --- REACT WEB API ENDPOINTS ---
+app.post('/api/login', async (req, res) => {
+  const { phone, pin } = req.body;
+  try {
+    const user = await pool.query('SELECT * FROM tbl_users WHERE phone = $1 AND pin = $2', [phone, pin]);
+    if (user.rows.length > 0) res.json({ success: true, user: user.rows[0] });
+    else res.status(401).json({ success: false, message: 'Invalid credentials' });
+  } catch (err) { res.status(500).json({ error: 'Login failed' }); }
+});
 
-// --- UNIFIED ENDPOINTS ---
-
-// A. React Dashboard API: Fetch All Users (Farmers, Buyers, Agents)
 app.get('/api/inventory', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM tbl_users ORDER BY id DESC');
-    res.json(result.rows);
-  } catch (err) {
-    console.error("Dashboard Users Error:", err);
-    res.status(500).json({ error: 'Database connection failed' });
-  }
+  const users = await pool.query('SELECT * FROM tbl_users ORDER BY id DESC');
+  res.json(users.rows);
 });
 
-// B. React Dashboard API: Fetch All Market Products
 app.get('/api/products', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM tbl_products ORDER BY id DESC');
-    res.json(result.rows);
-  } catch (err) {
-    console.error("Dashboard Products Error:", err);
-    res.status(500).json({ error: 'Failed to fetch products' });
-  }
+  const products = await pool.query('SELECT * FROM tbl_products ORDER BY id DESC');
+  res.json(products.rows);
 });
 
-// C. Africa's Talking USSD Webhook
+app.post('/api/transaction', async (req, res) => {
+  const { productId, action, phone } = req.body; // action: 'Buy' or 'Confirm'
+  try {
+    if (action === 'Buy') {
+      await pool.query("UPDATE tbl_products SET status = 'Pending', buyer_phone = $1 WHERE id = $2", [phone, productId]);
+    } else if (action === 'Confirm') {
+      await pool.query("UPDATE tbl_products SET status = 'Sold' WHERE id = $1", [productId]);
+    }
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: 'Transaction failed' }); }
+});
+
+// --- AFRICA'S TALKING USSD WEBHOOK ---
 app.post('/ussd', async (req, res) => {
-  const { sessionId, phoneNumber, text } = req.body;
+  const { phoneNumber, text } = req.body;
   const textArray = (text || '').split('*');
   let response = '';
 
   try {
-    // MAIN MENU
-    if (text === '' || !text) {
-      response = 'CON Welcome to AgroConnect Ekiti \n1. Register \n2. View Market (Buyers) \n3. List Crop (Farmers)';
+    if (text === '') {
+      response = 'CON AgroConnect Ekiti \n1. Register \n2. Buy Crops \n3. Sell Crops \n4. Agent Portal';
     } 
-    
-    // ROUTE 1: REGISTRATION FLOW (Dynamic Roles)
+    // 1. REGISTER
     else if (textArray[0] === '1') {
-      if (textArray.length === 1) {
-        response = 'CON Select Role: \n1. Farmer \n2. Buyer \n3. Agro Agent';
-      } else if (textArray.length === 2) {
-        response = 'CON Enter your full name:';
-      } else if (textArray.length === 3) {
-        response = 'CON Enter your town (e.g., Ado-Ekiti):';
-      } else if (textArray.length === 4) {
-        // Map the numeric input to the actual role string
-        const roleMap = { '1': 'Farmer', '2': 'Buyer', '3': 'Agro Agent' };
-        const selectedRole = roleMap[textArray[1]] || 'User';
-        const fullName = textArray[2];
-        const town = textArray[3];
-        
-        const insertQuery = `INSERT INTO tbl_users (name, phone, town, role) VALUES ($1, $2, $3, $4)`;
-        await pool.query(insertQuery, [fullName, phoneNumber, town, selectedRole]);
-        
-        response = `END ${selectedRole} profile created successfully for ${fullName}!`;
+      if (textArray.length === 1) response = 'CON Role: \n1. Farmer \n2. Buyer \n3. Agent';
+      else if (textArray.length === 2) response = 'CON Enter Full Name:';
+      else if (textArray.length === 3) response = 'CON Enter Town:';
+      else if (textArray.length === 4) response = 'CON Create 4-digit PIN:';
+      else if (textArray.length === 5) {
+        const roles = { '1': 'Farmer', '2': 'Buyer', '3': 'Agro Agent' };
+        await pool.query(`INSERT INTO tbl_users (name, phone, town, role, pin) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (phone) DO NOTHING`, 
+          [textArray[2], phoneNumber, textArray[3], roles[textArray[1]], textArray[4]]);
+        response = `END Account created! Use PIN ${textArray[4]} to login online.`;
       }
     }
-
-    // ROUTE 2: BUYERS VIEWING MARKET
+    // 2. BUY CROP
     else if (textArray[0] === '2') {
-      const marketQuery = await pool.query('SELECT crop_name, price_per_unit FROM tbl_products LIMIT 3');
-      if (marketQuery.rows.length === 0) {
-        response = 'END The market is currently empty. Check back later.';
-      } else {
-        let marketList = 'END --- AgroConnect Market ---\n';
-        marketQuery.rows.forEach((item, index) => {
-          marketList += `${index + 1}. ${item.crop_name} - ${item.price_per_unit}\n`;
-        });
-        response = marketList;
-      }
-    }
-
-    // ROUTE 3: FARMERS LISTING CROP
-    else if (textArray[0] === '3') {
       if (textArray.length === 1) {
-        response = 'CON Enter Crop Name (e.g., Yam):';
+        const market = await pool.query("SELECT id, crop_name, price_per_unit FROM tbl_products WHERE status = 'Available' LIMIT 5");
+        if (market.rows.length === 0) response = 'END Market empty.';
+        else {
+          response = 'CON Select Crop to Buy:\n' + market.rows.map(item => `${item.id}. ${item.crop_name} (${item.price_per_unit})`).join('\n');
+        }
       } else if (textArray.length === 2) {
-        response = 'CON Enter Price per unit (e.g., 2500):';
-      } else if (textArray.length === 3) {
-        const crop = textArray[1];
-        const price = `₦${textArray[2]}`;
-        
-        const insertCrop = `INSERT INTO tbl_products (seller_name, seller_phone, crop_name, price_per_unit) VALUES ('Registered Farmer', $1, $2, $3)`;
-        await pool.query(insertCrop, [phoneNumber, crop, price]);
-        
-        response = `END Your ${crop} has been listed on the market for ${price}.`;
+        await pool.query("UPDATE tbl_products SET status = 'Pending', buyer_phone = $1 WHERE id = $2", [phoneNumber, textArray[1]]);
+        response = `END Purchase reserved! An agent will contact you.`;
       }
-    } 
-    
-    else {
-      response = 'END Invalid input. Please try again.';
     }
-
-    // Telecom standard required by Africa's Talking
-    res.set('Content-Type', 'text/plain');
-    res.send(response);
-
-  } catch (error) {
-    console.error("USSD Transaction Error:", error);
-    res.set('Content-Type', 'text/plain');
-    res.send('END A database network error occurred. Please try again.');
-  }
+    // 3. SELL CROP
+    else if (textArray[0] === '3') {
+      if (textArray.length === 1) response = 'CON Enter Crop Name:';
+      else if (textArray.length === 2) response = 'CON Enter Price (e.g., 5000):';
+      else if (textArray.length === 3) {
+        await pool.query("INSERT INTO tbl_products (seller_phone, crop_name, price_per_unit) VALUES ($1, $2, $3)", [phoneNumber, textArray[1], `₦${textArray[2]}`]);
+        response = 'END Crop listed successfully on the market.';
+      }
+    }
+    // 4. AGENT PORTAL
+    else if (textArray[0] === '4') {
+      if (textArray.length === 1) {
+        const pending = await pool.query("SELECT id, crop_name FROM tbl_products WHERE status = 'Pending' LIMIT 5");
+        if (pending.rows.length === 0) response = 'END No pending orders.';
+        else {
+          response = 'CON Select order to confirm:\n' + pending.rows.map(item => `${item.id}. ${item.crop_name}`).join('\n');
+        }
+      } else if (textArray.length === 2) {
+        await pool.query("UPDATE tbl_products SET status = 'Sold' WHERE id = $1", [textArray[1]]);
+        response = 'END Order confirmed. Status changed to Sold.';
+      }
+    } else {
+      response = 'END Invalid input.';
+    }
+    res.set('Content-Type', 'text/plain').send(response);
+  } catch (error) { res.set('Content-Type', 'text/plain').send('END System error.'); }
 });
 
-// D. Twilio / Meta WhatsApp Webhook
+// --- TWILIO WHATSAPP WEBHOOK ---
 app.post('/whatsapp', (req, res) => {
-  const incomingMsg = (req.body.Body || '').trim().toLowerCase();
-  
-  let replyText = "Welcome to AgroConnect Ekiti! 🌾\n\nReply with:\n1. Check Crop Prices\n2. Register as Farmer/Buyer\n3. Weather Advisory";
-
-  if (incomingMsg === '1') {
-    replyText = "📊 *Current Market Prices (Ekiti)*:\n- Yam: ₦2,500 / tuber\n- Cassava: ₦18,500 / bag\n- Cocoa: ₦8,200 / kg";
-  } else if (incomingMsg === '2') {
-    replyText = "📝 To register, reply with your *Full Name* and *Town* (e.g., Samuel, Ado-Ekiti).";
-  } else if (incomingMsg === '3') {
-    replyText = "🌦️ *Agro-Weather Advisory*:\nScattered showers expected across Ado and Ikole Ekiti. Optimal soil moisture for planting.";
-  }
-
-  // Twilio standard requires TwiML XML format
   res.set('Content-Type', 'text/xml');
-  res.send(`<?xml version="1.0" encoding="UTF-8"?><Response><Message>${replyText}</Message></Response>`);
+  res.send(`<?xml version="1.0" encoding="UTF-8"?><Response><Message>Welcome to AgroConnect Ekiti! 🌾\nMarket updates are active.</Message></Response>`);
 });
 
-// Start the Server
-app.listen(port, () => {
-  console.log(`AgroConnect Worker thread running on port ${port}`);
-});
+app.listen(port, () => console.log(`System active on port ${port}`));
