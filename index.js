@@ -41,6 +41,18 @@ app.post('/api/login', async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Login failed' }); }
 });
 
+// NEW: Web Registration Endpoint
+app.post('/api/register', async (req, res) => {
+  const { name, phone, town, role, pin } = req.body;
+  try {
+    await pool.query(
+      `INSERT INTO tbl_users (name, phone, town, role, pin) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (phone) DO NOTHING`, 
+      [name, phone, town, role, pin]
+    );
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: 'Registration failed' }); }
+});
+
 app.get('/api/inventory', async (req, res) => {
   const users = await pool.query('SELECT * FROM tbl_users ORDER BY id DESC');
   res.json(users.rows);
@@ -52,7 +64,7 @@ app.get('/api/products', async (req, res) => {
 });
 
 app.post('/api/transaction', async (req, res) => {
-  const { productId, action, phone } = req.body; // action: 'Buy' or 'Confirm'
+  const { productId, action, phone } = req.body; 
   try {
     if (action === 'Buy') {
       await pool.query("UPDATE tbl_products SET status = 'Pending', buyer_phone = $1 WHERE id = $2", [phone, productId]);
@@ -73,7 +85,6 @@ app.post('/ussd', async (req, res) => {
     if (text === '') {
       response = 'CON AgroConnect Ekiti \n1. Register \n2. Buy Crops \n3. Sell Crops \n4. Agent Portal';
     } 
-    // 1. REGISTER
     else if (textArray[0] === '1') {
       if (textArray.length === 1) response = 'CON Role: \n1. Farmer \n2. Buyer \n3. Agent';
       else if (textArray.length === 2) response = 'CON Enter Full Name:';
@@ -86,7 +97,6 @@ app.post('/ussd', async (req, res) => {
         response = `END Account created! Use PIN ${textArray[4]} to login online.`;
       }
     }
-    // 2. BUY CROP
     else if (textArray[0] === '2') {
       if (textArray.length === 1) {
         const market = await pool.query("SELECT id, crop_name, price_per_unit FROM tbl_products WHERE status = 'Available' LIMIT 5");
@@ -99,7 +109,6 @@ app.post('/ussd', async (req, res) => {
         response = `END Purchase reserved! An agent will contact you.`;
       }
     }
-    // 3. SELL CROP
     else if (textArray[0] === '3') {
       if (textArray.length === 1) response = 'CON Enter Crop Name:';
       else if (textArray.length === 2) response = 'CON Enter Price (e.g., 5000):';
@@ -108,7 +117,6 @@ app.post('/ussd', async (req, res) => {
         response = 'END Crop listed successfully on the market.';
       }
     }
-    // 4. AGENT PORTAL
     else if (textArray[0] === '4') {
       if (textArray.length === 1) {
         const pending = await pool.query("SELECT id, crop_name FROM tbl_products WHERE status = 'Pending' LIMIT 5");
