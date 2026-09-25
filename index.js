@@ -41,7 +41,6 @@ app.post('/api/login', async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Login failed' }); }
 });
 
-// NEW: Web Registration Endpoint
 app.post('/api/register', async (req, res) => {
   const { name, phone, town, role, pin } = req.body;
   try {
@@ -61,6 +60,18 @@ app.get('/api/inventory', async (req, res) => {
 app.get('/api/products', async (req, res) => {
   const products = await pool.query('SELECT * FROM tbl_products ORDER BY id DESC');
   res.json(products.rows);
+});
+
+// NEW: Web Endpoint for Farmers to list crops
+app.post('/api/products', async (req, res) => {
+  const { seller_phone, crop_name, price_per_unit } = req.body;
+  try {
+    await pool.query(
+      "INSERT INTO tbl_products (seller_phone, crop_name, price_per_unit) VALUES ($1, $2, $3)", 
+      [seller_phone, crop_name, price_per_unit]
+    );
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: 'Failed to list product' }); }
 });
 
 app.post('/api/transaction', async (req, res) => {
@@ -135,7 +146,6 @@ app.post('/ussd', async (req, res) => {
   } catch (error) { res.set('Content-Type', 'text/plain').send('END System error.'); }
 });
 
-// --- TWILIO WHATSAPP WEBHOOK ---
 app.post('/whatsapp', (req, res) => {
   res.set('Content-Type', 'text/xml');
   res.send(`<?xml version="1.0" encoding="UTF-8"?><Response><Message>Welcome to AgroConnect Ekiti! 🌾\nMarket updates are active.</Message></Response>`);
